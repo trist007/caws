@@ -1,3 +1,13 @@
+//
+//  caws.c
+//
+//  Tristan Gonzalez, caws, a wrapper for awscli written in C
+//  Copyright (c) 2022 Tristan Gonzalez. All rights reserved.
+//  rgonzale@darkterminal.net
+//
+// credits to Tim Carstens for TCP/IP data structures from sniffer.c
+// credits to Vito Ruiz for the sorting algorithm and the name "ddoc"
+//
 #include <stdio.h>
 #include <stdlib.h>
 #include <curses.h>
@@ -7,6 +17,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <sys/types.h>
+#include <signal.h>
 
 /* program version */
 float version = 0.1;
@@ -18,7 +29,7 @@ float version = 0.1;
 #define FILTER 96
 
 /* Starting number of struct account pointers to hold before realloc() is called */
-#define ACCOUNTS 2
+#define ACCOUNTS 1
 
 /* Print Screen every number of seconds */
 #define SECONDS 2
@@ -65,7 +76,6 @@ char Filter[FILTER];
  */
 struct Accounts {
   struct Account **dptr;  // array of pointers pointing to struct Account
-  char accountNumber[13]; // account number
   int seconds;            // rate to print to screen
   u_int count;            // number of accounts
   u_int size;             // size of account pointer array
@@ -77,38 +87,53 @@ typedef struct Accounts Accounts;
  * struct to store data on account
  */
 struct Account {
-    u_int GET, POST;
-    u_int num_requests;     // number of distinct requests
-    u_int total_requests;
-    u_int num_ips;
-    char name[64];
-    u_int request_size;
-    struct Request **requests;  // array of pointers pointing to struct Request
-    u_int ip_size;
-    struct IP **ips;      // array of pointers pointing to struct IP
+  char accountNumber[64]; // account number
+  struct VPC **vpcs;      // array of pointers pointing to struct VPC
+  struct EC2 **ec2s;      // array of pointers pointing to struct EC2
 };
 
 typedef struct Account Account;
 
 /*
- * struct to store requests about a account
+ * struct to store EC2
  */
-struct Request {
+struct EC2 {
     u_int count;
-    char url[128];
+    char name[128];
+    char instanceid[128];
+    char privateip[128];
 };
 
-typedef struct Request Request;
+typedef struct EC2 EC2;
 
 /*
- * struct to store IPs
+ * struct to store VPCs
  */
-struct IP {
+struct VPC {
   u_int count;
-  char ip[16];
+  char name[16];
+  char vpc[16];
+  char cidr[32];
+  struct SUBNET **subnets;
 };
 
-typedef struct IP IP;
+typedef struct VPC VPC;
+
+/*
+ * struct to store Subnets
+ */
+struct SUBNET {
+  u_int count;
+  char name[16];
+  char vpc[16];
+  char cidr[32];
+};
+
+typedef struct SUBNET SUBNET;
+
+
+void TearDown(struct Accounts *);
+int NcursesExit();
 
 /*
  * Initializes main pointer to data structures
@@ -128,6 +153,76 @@ Accounts *Initialize()
 
   return Dptr;
 }
+
+/*
+ * allocates and creates a account struct
+ */
+void AddAccount(Accounts *Dptr, char *accountNumber)
+{
+  int count = 0, size = 0;
+  Account **tmp;
+  count = Dptr->count;
+  size = Dptr->size;
+
+  // if the number of struct Accounts is the same as number of struct pointers in the array then realloc array by factor of 2
+  if (count == size) {
+    tmp = (Account **) realloc(Dptr->dptr, (sizeof(Account *) * size) * 2);
+    if (tmp == NULL) {
+        fprintf(stderr, "Realloc failed\n");
+          exit(1);
+    }
+    else
+      Dptr->dptr = tmp;
+
+    tmp = NULL;
+    size *= 2;
+    Dptr->size = size;
+  }
+
+  // allocate memory for 1 struct account
+  Account *account = calloc(1, sizeof(struct Account));
+
+  Dptr->dptr[count] = account;
+  Dptr->count++;
+
+  return;
+}
+
+/*
+ * gets index of account
+int GetAccountIndex(Accounts *Dptr, char *host)
+{
+  int i;
+
+  for (i = 0; i < Dptr->count; i++) {
+    if (strncmp(Dptr->dptr[i]->name, host, strlen(host)) == 0)
+      return i;
+  }
+  // didn't find account
+  return -1;
+}
+*/
+
+/*
+ * sort Account function, only compares the elements before it
+int sortAccounts(Accounts *Dptr, int *account_index)
+{
+  int i, index = -1;
+  struct Account *tmp;
+  for (i = *account_index; i > 0; i--) {
+    if (Dptr->dptr[i]->total_requests > Dptr->dptr[i - 1]->total_requests) {
+      tmp = Dptr->dptr[i];
+      Dptr->dptr[i] = Dptr->dptr[i - 1];
+      Dptr->dptr[i - 1] = tmp;
+      index = i - 1;
+    }
+  }
+  if (index != -1)
+    return index;
+  else
+    return *account_index;
+}
+*/
 
 /*
  * function to create the Ncurses pads
@@ -162,6 +257,23 @@ void CreatePads()
 }
 
 /*
+ * catch Cntrl-C
+ */
+void mysighand(Accounts *Dptr, int signum) {
+      if (signum == 2) {
+    move(0, 0);
+    clear();
+    refresh();
+          addstr("Inga\nCatching SIGINT\nShutting Down\n");
+    refresh();
+    sleep(1);
+          TearDown(Dptr);
+    NcursesExit();
+          exit(1);
+      }
+}
+
+/*
  * function to display intro screen
  */
 void DisplayIntro(Accounts *Dptr)
@@ -180,7 +292,6 @@ void DisplayIntro(Accounts *Dptr)
  */
 int NcursesInit(Accounts *Dptr)
 {
-
   // Start up Ncurses
   initscr();
 
@@ -337,18 +448,15 @@ void NcursesPart1(Accounts *Dptr)
   // print header
   wmove(p1head, 0, 0);
 
-  if (Pause) waddstr(p1head, "Total\t\tGET\t\tPOST\t\tAccount\t\t*Paused*\n");
-  else waddstr(p1head, "Total\t\tGET\t\tPOST\t\tAccount\n");
+  if (Pause) waddstr(p1head, "AccountNumber\t\t*Paused*\n");
+  else waddstr(p1head, "AccountNumber\n");
 
   PREFRESHP1HEAD;
 
   // move to the top left corner and output Account Summary Statistics (Part 1)
   wmove(p1accounts, 0, 0);
   for (i = 0; i < Dptr->count; i++)
-    wprintw(p1accounts, "%d\t\t%d\t\t%d\t\t%s\n",  Dptr->dptr[i]->total_requests,
-                            Dptr->dptr[i]->GET,
-                            Dptr->dptr[i]->POST,
-                            Dptr->dptr[i]->name);
+    wprintw(p1accounts, "%s\n",  Dptr->dptr[i]->accountNumber);
 
   PREFRESHP1ACCOUNTS;
 
@@ -372,42 +480,19 @@ void NcursesPart2(Account *dptr)
   // move to the top left of p2requests pad
   wmove(p2head, 0, 0);
   if (Pause)
-    wprintw(p2head, "IPs:count  *Paused*\t%s\t\tGET: %d\t\tPOST: %d\t\tTotal Requests: %d\n",
-                      dptr->name,
-                      dptr->GET,
-                      dptr->POST,
-                      dptr->total_requests);
+    wprintw(p2head, "AccountNumber:  *Paused*\t%s\n",
+                      dptr->accountNumber);
   else
-    wprintw(p2head, "IPs:count\t\t%s\t\tGET: %d\t\tPOST: %d\t\tTotal Requests: %d\n",
+    wprintw(p2head, "AccountNumber: \t\t%s\t\t\n",
     //wprintw(p2head, "IPs:count %s GET: %d POST: %d Total Requests: %d part2rows %d totalrowsp2: %d num_ips: %d num_requests %d\n",
-                      dptr->name,
-                      dptr->GET,
-                      dptr->POST,
-                      dptr->total_requests);
+                      dptr->accountNumber);
 
   PREFRESHP2HEAD;
 
   // move to top left of p2ips pad
   wmove(p2ips, 0, 0);
 
-  for (i = 0; i < dptr->num_ips; i++)
-    wprintw(p2ips, "%s: %d\n",  dptr->ips[i]->ip,
-                  dptr->ips[i]->count);
-
   PREFRESHP2IPS;
-
-  // output URLs
-  wmove(p2requests, 0, 0);
-  for (i = 0; i < dptr->num_requests; i++) {
-    if (useFilter == 1) {
-      if (filterURL(dptr->requests[i]->url) == 1)
-        wprintw(p2requests, "count: %d\t%s\n",  dptr->requests[i]->count,
-                            dptr->requests[i]->url);
-    }
-    else
-      wprintw(p2requests, "count: %d\t%s\n",  dptr->requests[i]->count,
-                          dptr->requests[i]->url);
-  }
 
   PREFRESHP2REQUESTS;
 }
@@ -443,33 +528,6 @@ void UserInput(Accounts *Dptr)
         if (usePart2 == 0) {
           part2account = Dptr->dptr[selection];
           usePart2 = 1;
-        }
-        break;
-      case 'f': // add filter
-        if (usePart2 == 0) break;
-        if (useFilter == 0) {
-          Pause = 1;
-          useFilter = 1;
-          werase(p2head);
-          PREFRESHP2HEAD;
-          wmove(p2head, 0, 0);
-          wprintw(p2head, "Enter filter: ");
-          wmove(p2head, 0, 15);
-          prefresh(p2head, 0, 0, 0, 0, 0, columns);
-          mvgetnstr(0, 14, Filter, 80);
-          werase(p2head);
-          werase(p2ips);
-          werase(p2requests);
-          Part2Refresh(Dptr);
-          Pause = 0;
-        }
-        else {
-          useFilter = 0;
-          clear();
-          move(0, 0);
-          addstr("Removing filter");
-          refresh();
-          sleep(1);
         }
         break;
         case 'i': // switch to part 1
@@ -642,6 +700,7 @@ void TearDown(Accounts *Dptr)
   size = Dptr->size;
   count = Dptr->count;
 
+  /*
   for (i = 0; i < Dptr->count; i++)
     for (j = 0; j < Dptr->dptr[i]->num_requests; j++)
       free(Dptr->dptr[i]->requests[j]);
@@ -649,6 +708,7 @@ void TearDown(Accounts *Dptr)
   for (i = 0; i < Dptr->count; i++)
     for (j = 0; j < Dptr->dptr[i]->num_ips; j++)
       free(Dptr->dptr[i]->ips[j]);
+  */
 
   for (i = 0; i < count; i++)
     free(Dptr->dptr[i]);
@@ -660,23 +720,30 @@ void TearDown(Accounts *Dptr)
 }
 
 /*
+ * main capture  function
+ */
+int RaiseCurtain(Accounts *Dptr, char *accountNumber) {
+
+  // set control-c handler
+  //signal(SIGINT, mysighand);
+
+  AddAccount(Dptr, accountNumber);
+
+  // fire up Ncurses
+  NcursesInit(Dptr);
+
+  RefreshAll();
+
+  return 0;
+}
+
+/*
  * function to print command usage
  */
 void PrintUsage(char **argv, Accounts *Dptr)
 {
   fprintf(stderr, "%s version %.1f\n", argv[0], version);
   fprintf(stderr, "Usage: %s <account_number>\n\n", argv[0]);
-  fprintf(stderr, "Runtime Commands\n");
-  fprintf(stderr, "p - pause screen to highlight text for copying\n");
-  fprintf(stderr, "q - quit program\n\n");
-
-  fprintf(stderr, "Master mode\n");
-  fprintf(stderr, "e - enter Account mode for selected account\n");
-  fprintf(stderr, "j/k - move up and down account list\n\n");
-
-  fprintf(stderr, "Account mode\n");
-  fprintf(stderr, "f - add filter/release filter\n");
-  fprintf(stderr, "i - back out to Master mode\n");
   free(Dptr);
   exit(1);
 }
@@ -739,10 +806,6 @@ void ParseArguments(int *argc, char **argv, Accounts *Dptr)
 
 int main(int argc, char *argv[]) {
 
-  int i, j, k;
-  
-  int account_number = 0; 
-
   // thread variables
   pthread_t user_input, part_switcher, print_screen;
 
@@ -765,10 +828,8 @@ int main(int argc, char *argv[]) {
   Dptr = Initialize();
 
   // parse arg grab account name
-  if (argc > 1)
-    strncpy(Dptr->accountNumber, argv[1], 12);
-
-  printf("Logging into %s\n", Dptr->accountNumber);
+  if (argc > 2) 
+    PrintUsage(argv, Dptr);
 
   // start up user input thread
   pthread_create (&user_input, NULL, (void *) &UserInput, (void *) Dptr);
@@ -779,6 +840,10 @@ int main(int argc, char *argv[]) {
   // start the Print Screen thread
   if (realtime == 0)
     pthread_create (&print_screen, NULL, (void *) &PrintScreen, (void *) Dptr);
+
+  // main method 
+  if (argc == 2)
+    RaiseCurtain(Dptr, argv[1]);
 
   // free up data structures
   TearDown(Dptr);
