@@ -29,10 +29,10 @@ float version = 0.1;
 #define FILTER 96
 
 /* Starting number of struct account pointers to hold before realloc() is called */
-#define ACCOUNTS 1
+#define ACCOUNTS 2
 
 /* Print Screen every number of seconds */
-#define SECONDS 2
+#define SECONDS 1
 
 /* Definition for the ENTER key representing integer 10 */
 #define ENTER 10
@@ -149,7 +149,7 @@ Accounts *Initialize()
   // allocate memory for array of pointers to struct account
   Dptr->dptr = (Account **) calloc(ACCOUNTS, sizeof(Account *));
 
-  Dptr->size = ACCOUNTS;
+  //Dptr->size = ACCOUNTS;
 
   return Dptr;
 }
@@ -183,6 +183,7 @@ void AddAccount(Accounts *Dptr, char *accountNumber)
   Account *account = calloc(1, sizeof(struct Account));
 
   Dptr->dptr[count] = account;
+  strcpy(Dptr->dptr[0]->accountNumber, accountNumber);
   Dptr->count++;
 
   return;
@@ -481,7 +482,7 @@ void NcursesPart2(Account *dptr)
   wmove(p2head, 0, 0);
   if (Pause)
     wprintw(p2head, "AccountNumber:  *Paused*\t%s\n",
-                      dptr->accountNumber);
+                      dptr[0].accountNumber);
   else
     wprintw(p2head, "AccountNumber: \t\t%s\t\t\n",
     //wprintw(p2head, "IPs:count %s GET: %d POST: %d Total Requests: %d part2rows %d totalrowsp2: %d num_ips: %d num_requests %d\n",
@@ -733,7 +734,7 @@ int RaiseCurtain(Accounts *Dptr, char *accountNumber) {
   NcursesInit(Dptr);
 
   RefreshAll();
-
+  
   return 0;
 }
 
@@ -832,18 +833,24 @@ int main(int argc, char *argv[]) {
     PrintUsage(argv, Dptr);
 
   // start up user input thread
-  pthread_create (&user_input, NULL, (void *) &UserInput, (void *) Dptr);
+  //pthread_create (&user_input, NULL, (void *) &UserInput, (void *) Dptr);
 
   // start up part_switcher thread
-  pthread_create (&part_switcher, NULL, (void *) &PartSwitcher, (void *) Dptr);
+  //pthread_create (&part_switcher, NULL, (void *) &PartSwitcher, (void *) Dptr);
 
   // start the Print Screen thread
-  if (realtime == 0)
-    pthread_create (&print_screen, NULL, (void *) &PrintScreen, (void *) Dptr);
+  //if (realtime == 1)
+    //pthread_create (&print_screen, NULL, (void *) &PrintScreen, (void *) Dptr);
 
   // main method 
-  if (argc == 2)
-    RaiseCurtain(Dptr, argv[1]);
+  //if (argc == 2)
+    //RaiseCurtain(Dptr, argv[1]);
+
+  AddAccount(Dptr, argv[1]);
+
+  printf("Account Number: %s\n", Dptr->dptr[0]->accountNumber);
+
+  //UserInput(Dptr);
 
   // free up data structures
   TearDown(Dptr);
